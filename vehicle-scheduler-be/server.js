@@ -2,114 +2,83 @@ const express = require('express');
 const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
+const apiUrl = 'http://4.224.186.213/evaluation-service';
 
-// Base URL for the Affordmed Evaluation APIs
-const BASE_API_URL = 'http://4.224.186.213/evaluation-service';
+const getOptimalTasks = (maxHours, items) => {
+    const len = items.length;
+    const matrix = Array(len + 1).fill(0).map(() => Array(maxHours + 1).fill(0));
 
-// TODO: Replace with your actual authorization token if required by the middleware
-const AUTH_HEADERS = {
-    'Authorization': 'Bearer YOUR_AUTH_TOKEN_HERE' 
-};
+    for (let i = 1; i <= len; i++) {
+        const time = items[i - 1].Duration;
+        const val = items[i - 1].Impact;
 
-/**
- * Core Algorithm: 0/1 Knapsack using Dynamic Programming
- * @param {number} budget - The mechanic-hours available (capacity)
- * @param {Array} vehicles - Array of vehicle objects { TaskID, Duration, Impact }
- * @returns {Object} { maxImpact, selectedTaskIDs }
- */
-function optimizeMaintenanceSchedule(budget, vehicles) {
-    const n = vehicles.length;
-    
-    // Initialize a 2D DP array with 0s
-    // dp[i][w] will store the maximum impact using the first 'i' vehicles and 'w' hours
-    const dp = Array(n + 1).fill(0).map(() => Array(budget + 1).fill(0));
-
-    // Build the DP table
-    for (let i = 1; i <= n; i++) {
-        const duration = vehicles[i - 1].Duration;
-        const impact = vehicles[i - 1].Impact;
-
-        for (let w = 1; w <= budget; w++) {
-            if (duration <= w) {
-                // Maximize by either including the current task or excluding it
-                dp[i][w] = Math.max(dp[i - 1][w], dp[i - 1][w - duration] + impact);
+        for (let w = 1; w <= maxHours; w++) {
+            if (time <= w) {
+                matrix[i][w] = Math.max(matrix[i - 1][w], matrix[i - 1][w - time] + val);
             } else {
-                // Task duration exceeds current budget, exclude it
-                dp[i][w] = dp[i - 1][w];
+                matrix[i][w] = matrix[i - 1][w];
             }
         }
     }
 
-    // Reconstruct the selected subset of vehicles (Backtracking)
-    let maxImpact = dp[n][budget];
-    let remainingBudget = budget;
-    const selectedTaskIDs = [];
+    let currentVal = matrix[len][maxHours];
+    let hoursLeft = maxHours;
+    const chosenIds = [];
 
-    for (let i = n; i > 0 && maxImpact > 0; i--) {
-        // If the value came from the row above, the item was not included
-        if (maxImpact !== dp[i - 1][remainingBudget]) {
-            selectedTaskIDs.push(vehicles[i - 1].TaskID);
-            maxImpact -= vehicles[i - 1].Impact;
-            remainingBudget -= vehicles[i - 1].Duration;
+    for (let i = len; i > 0 && currentVal > 0; i--) {
+        if (currentVal !== matrix[i - 1][hoursLeft]) {
+            chosenIds.push(items[i - 1].TaskID);
+            currentVal -= items[i - 1].Impact;
+            hoursLeft -= items[i - 1].Duration;
         }
     }
 
     return {
-        totalImpact: dp[n][budget],
-        totalDurationUsed: budget - remainingBudget,
-        selectedTasks: selectedTaskIDs
+        totalImpact: matrix[len][maxHours],
+        timeUsed: maxHours - hoursLeft,
+        tasks: chosenIds
     };
-}
+};
 
-/**
- * Route: Calculate optimal schedules for all depots
- */
 app.get('/api/schedule', async (req, res) => {
     try {
-        // 1. Fetch Depots and Vehicles concurrently
-        const [depotsResponse, vehiclesResponse] = await Promise.all([
-            axios.get(`${BASE_API_URL}/depots`, { headers: AUTH_HEADERS }),
-            axios.get(`${BASE_API_URL}/vehicles`, { headers: AUTH_HEADERS })
+        const token = process.env.AUTH_TOKEN || 'ahXjvp';
+        const config = { headers: { 'Authorization': token.trim() } };
+
+        const [depotsReq, vehiclesReq] = await Promise.all([
+            axios.get(`${apiUrl}/depots`, config),
+            axios.get(`${apiUrl}/vehicles`, config)
         ]);
 
-        const depots = depotsResponse.data.depots;
-        const vehicles = vehiclesResponse.data.vehicles;
+        const depots = depotsReq.data.depots;
+        const vehicles = vehiclesReq.data.vehicles;
+        const output = [];
 
-        const results = [];
+        for (const d of depots) {
+            const limit = d.MechanicHours;
+            const result = getOptimalTasks(limit, vehicles);
 
-        // 2. Process optimal schedule for each depot
-        for (const depot of depots) {
-            const budget = depot.MechanicHours;
-            
-            // Execute DP algorithm
-            const schedule = optimizeMaintenanceSchedule(budget, vehicles);
-
-            results.push({
-                depotID: depot.ID,
-                allocatedBudget: budget,
-                optimizationResult: schedule
+            output.push({
+                depotID: d.ID,
+                allocatedBudget: limit,
+                optimizationResult: result
             });
         }
 
-        // 3. Return the consolidated schedule mapping
         return res.status(200).json({
             success: true,
-            message: "Successfully generated optimal vehicle maintenance schedules.",
-            data: results
+            data: output
         });
 
-    } catch (error) {
-        console.error("Error fetching data or processing schedule:", error.message);
+    } catch (err) {
         return res.status(500).json({
             success: false,
-            message: "Failed to generate schedule. Ensure APIs are reachable and token is valid.",
-            error: error.response ? error.response.data : error.message
+            error: err.response ? err.response.data : err.message
         });
     }
 });
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Vehicle Maintenance Scheduler running on port ${PORT}`);
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
 });
